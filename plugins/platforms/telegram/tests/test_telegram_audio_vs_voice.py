@@ -12,13 +12,34 @@ These tests confirm that:
   3. Mixed media lists (voice + audio) split correctly.
 """
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from gateway.config import GatewayConfig, Platform
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.session import SessionSource
+
+
+def _patch_stt(transcribe_audio=None):
+    """Patch the STT registry entry so gateway code can find transcribe_audio.
+
+    The gateway resolves STT via ``registries.get_tool_provider("stt")``,
+    not via ``tools.transcription_tools`` (which moved to a plugin).
+    """
+    from agent.plugin_registries import registries, ToolProviderEntry
+
+    mock_provider = ToolProviderEntry(
+        name="stt",
+        tool_functions={"transcribe_audio": transcribe_audio or MagicMock()},
+        config_functions={
+            "_get_provider": lambda _cfg=None: "local",
+            "_load_stt_config": lambda: {},
+            "is_stt_enabled": lambda _cfg=None: True,
+        },
+        constants={"MAX_FILE_SIZE": 25 * 1024 * 1024},
+    )
+    return patch.object(registries, "get_tool_provider", return_value=mock_provider)
 
 
 def _make_runner(stt_enabled: bool = True) -> "GatewayRunner":  # type: ignore[name-defined]
@@ -64,10 +85,10 @@ async def test_voice_message_still_transcribed():
     source = SessionSource(platform=Platform.TELEGRAM, chat_id="1", chat_type="dm")
     event = _voice_event("/tmp/voice.ogg")
 
-    with patch(
-        "tools.transcription_tools.transcribe_audio",
+    mock_transcribe = MagicMock(
         return_value={"success": True, "transcript": "hello world", "provider": "whisper"},
-    ) as mock_transcribe:
+    )
+    with _patch_stt(transcribe_audio=mock_transcribe):
         result = await runner._prepare_inbound_message_text(
             event=event,
             source=source,
@@ -90,9 +111,10 @@ async def test_audio_attachment_skips_stt():
     source = SessionSource(platform=Platform.TELEGRAM, chat_id="1", chat_type="dm")
     event = _audio_event("/tmp/song.mp3")
 
-    with patch(
-        "tools.transcription_tools.transcribe_audio",
-        side_effect=AssertionError("transcribe_audio must NOT be called for audio file attachments"),
+    with _patch_stt(
+        transcribe_audio=MagicMock(
+            side_effect=AssertionError("transcribe_audio must NOT be called for audio file attachments"),
+        ),
     ):
         with patch(
             "tools.credential_files.to_agent_visible_cache_path",
@@ -116,9 +138,8 @@ async def test_audio_attachment_context_note_format():
     source = SessionSource(platform=Platform.TELEGRAM, chat_id="1", chat_type="dm")
     event = _audio_event("/tmp/cache_12345_my_song.mp3")
 
-    with patch(
-        "tools.transcription_tools.transcribe_audio",
-        side_effect=AssertionError("must not be called"),
+    with _patch_stt(
+        transcribe_audio=MagicMock(side_effect=AssertionError("must not be called")),
     ):
         with patch(
             "tools.credential_files.to_agent_visible_cache_path",
@@ -147,9 +168,8 @@ async def test_audio_attachment_skips_stt_when_stt_disabled():
     source = SessionSource(platform=Platform.TELEGRAM, chat_id="1", chat_type="dm")
     event = _audio_event("/tmp/podcast.m4a")
 
-    with patch(
-        "tools.transcription_tools.transcribe_audio",
-        side_effect=AssertionError("must not be called"),
+    with _patch_stt(
+        transcribe_audio=MagicMock(side_effect=AssertionError("must not be called")),
     ):
         with patch(
             "tools.credential_files.to_agent_visible_cache_path",

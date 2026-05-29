@@ -3730,6 +3730,9 @@ def _all_platforms() -> list[dict]:
     for entry in platform_registry.all_entries():
         if entry.name in by_key:
             continue  # built-in already covers it
+        # Re-apply host gating for plugin entries (e.g. matrix on Windows).
+        if sys.platform == "win32" and entry.name == "matrix":
+            continue
         platforms.append({
             "key": entry.name,
             "label": entry.label,
